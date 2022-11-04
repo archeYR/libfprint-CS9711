@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "sigfm/sigfm.h"
 #define FP_COMPONENT "image"
 
 #include "fpi-compat.h"
@@ -165,10 +166,19 @@ typedef struct
   FpiImageFlags       flags;
   unsigned char      *image;
   gboolean            image_changed;
-} DetectMinutiaeNbisData;
+} DetectMinutiaeData;
+
+typedef struct
+{
+  SfmImgInfo        * sfm_info;
+  guchar            * image;
+  gint                width;
+  gint                height;
+  GAsyncReadyCallback user_cb;
+} ExtractSfmData;
 
 static void
-fp_image_detect_minutiae_free (DetectMinutiaeNbisData *data)
+fp_image_detect_minutiae_free (DetectMinutiaeData *data)
 {
   g_clear_pointer (&data->minutiae, free_minutiae);
   g_clear_pointer (&data->binarized, g_free);
@@ -179,15 +189,43 @@ fp_image_detect_minutiae_free (DetectMinutiaeNbisData *data)
   g_free (data);
 }
 
-G_DEFINE_AUTOPTR_CLEANUP_FUNC (DetectMinutiaeNbisData, fp_image_detect_minutiae_free)
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (DetectMinutiaeData, fp_image_detect_minutiae_free)
 
+static void
+fp_image_sfm_extract_free (ExtractSfmData * data)
+{
+  g_clear_pointer (&data->image, g_free);
+  g_clear_pointer (&data->sfm_info, sfm_free_info);
+  g_free (data);
+}
+
+static void
+fp_image_sfm_extract_cb (GObject * source_object, GAsyncResult * res,
+                         gpointer user_data)
+{
+  GTask * task = G_TASK (res);
+  FpImage * image;
+  ExtractSfmData * data = g_task_get_task_data (task);
+
+  if (!g_task_had_error (task))
+    {
+      image = FP_IMAGE (source_object);
+
+      g_clear_pointer (&image->data, g_free);
+      image->data = g_steal_pointer (&data->image);
+      image->sfm_info = g_steal_pointer (&data->sfm_info);
+    }
+
+  if (data->user_cb)
+    data->user_cb (source_object, res, user_data);
+}
 
 static gboolean
 fp_image_detect_minutiae_nbis_finish (FpImage *self,
                                       GTask   *task,
                                       GError **error)
 {
-  g_autoptr(DetectMinutiaeNbisData) data = NULL;
+  g_autoptr(DetectMinutiaeData) data = NULL;
 
   data = g_task_propagate_pointer (task, error);
 
@@ -271,13 +309,36 @@ invert_colors (guint8 *data, gint width, gint height)
 }
 
 static void
-fp_image_detect_minutiae_nbis_thread_func (GTask        *task,
-                                           gpointer      source_object,
-                                           gpointer      task_data,
-                                           GCancellable *cancellable)
+fp_image_sfm_extract_thread_func (GTask * task, void * src_obj,
+                                  void * task_data,
+                                  GCancellable * cancellable)
+{
+  ExtractSfmData * data = task_data;
+  GTimer * timer = g_timer_new ();
+
+  data->sfm_info = sfm_extract (data->image, data->width, data->height);
+  g_timer_stop (timer);
+  fp_dbg ("sfm extract completed in %f secs", g_timer_elapsed (timer, NULL));
+  g_timer_destroy (timer);
+  if (sfm_keypoints_count (data->sfm_info) == 0)
+    {
+      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
+                               "No keypoints found");
+      g_object_unref (task);
+      return;
+    }
+  g_task_return_boolean (task, TRUE);
+  g_object_unref (task);
+}
+
+static void
+fp_image_detect_minutiae_thread_func (GTask        *task,
+                                      gpointer      source_object,
+                                      gpointer      task_data,
+                                      GCancellable *cancellable)
 {
   g_autoptr(GTimer) timer = NULL;
-  g_autoptr(DetectMinutiaeNbisData) ret_data = NULL;
+  g_autoptr(DetectMinutiaeData) ret_data = NULL;
   g_autoptr(GTask) thread_task = g_steal_pointer (&task);
   g_autofree gint *direction_map = NULL;
   g_autofree gint *low_contrast_map = NULL;
@@ -300,7 +361,7 @@ fp_image_detect_minutiae_nbis_thread_func (GTask        *task,
   if (minutiae_flags != FPI_IMAGE_NONE)
     image = g_memdup2 (self->data, self->width * self->height);
 
-  ret_data = g_new0 (DetectMinutiaeNbisData, 1);
+  ret_data = g_new0 (DetectMinutiaeData, 1);
   ret_data->flags = minutiae_flags;
   ret_data->image = image;
   ret_data->image_changed = image != self->data;
@@ -448,6 +509,32 @@ fp_image_get_minutiae (FpImage *self)
   return self->minutiae;
 }
 
+SfmImgInfo *
+fp_image_get_sfm_info (FpImage * self)
+{
+  return self->sfm_info;
+}
+
+void
+fp_image_extract_sfm_info (FpImage * self, GCancellable * cancellable,
+                           GAsyncReadyCallback callback, gpointer user_data)
+{
+  GTask * task;
+  ExtractSfmData * data = g_new0 (ExtractSfmData, 1);
+
+  task = g_task_new (self, cancellable, fp_image_sigfm_extract_cb, user_data);
+  g_task_set_source_tag (task, fp_image_extract_sigfm_info);
+
+  data->image = g_malloc (self->width * self->height);
+  memcpy (data->image, self->data, self->width * self->height);
+  data->width = self->width;
+  data->height = self->height;
+  data->user_cb = callback;
+
+  g_task_set_task_data (task, data,
+                        (GDestroyNotify) fp_image_sfm_extract_free);
+  g_task_run_in_thread (task, fp_image_sfm_extract_thread_func);
+}
 /**
  * fp_image_detect_minutiae:
  * @self: A #FpImage
@@ -481,7 +568,7 @@ fp_image_detect_minutiae (FpImage            *self,
     }
 
   g_task_run_in_thread (g_steal_pointer (&task),
-                        fp_image_detect_minutiae_nbis_thread_func);
+                        fp_image_detect_minutiae_thread_func);
 }
 
 /**
@@ -504,6 +591,10 @@ fp_image_detect_minutiae_finish (FpImage      *self,
 
   g_return_val_if_fail (FP_IS_IMAGE (self), FALSE);
   g_return_val_if_fail (g_task_is_valid (result, self), FALSE);
+
+  if (g_task_get_source_tag (G_TASK (result)) == fp_image_extract_sigfm_info)
+    return g_task_propagate_boolean (G_TASK (result), error);
+
   g_return_val_if_fail (g_task_get_source_tag (G_TASK (result)) ==
                         fp_image_detect_minutiae, FALSE);
 
