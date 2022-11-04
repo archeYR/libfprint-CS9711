@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include "sigfm/sigfm.h"
 #include <gio/gio.h>
 
 G_BEGIN_DECLS
@@ -43,6 +44,7 @@ void          fp_image_detect_minutiae (FpImage            *self,
                                         GCancellable       *cancellable,
                                         GAsyncReadyCallback callback,
                                         gpointer            user_data);
+
 gboolean      fp_image_detect_minutiae_finish (FpImage      *self,
                                                GAsyncResult *result,
                                                GError      **error);
@@ -56,4 +58,9 @@ void           fp_minutia_get_coords (FpMinutia *min,
                                       gint      *x,
                                       gint      *y);
 
+SfmImgInfo *   fp_image_get_sfm_info (FpImage * self);
+void           fp_image_extract_sfm_info (FpImage           * self,
+                                          GCancellable      * cancellable,
+                                          GAsyncReadyCallback callback,
+                                          gpointer            user_data);
 G_END_DECLS
