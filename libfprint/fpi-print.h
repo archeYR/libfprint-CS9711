@@ -51,7 +51,7 @@ FpiMatchResult fpi_print_bz3_match (FpPrint *print_template,
                                     gint     bz3_threshold,
                                     GError **error);
 
-FpiMatchResult fpi_print_sfm_match (FpPrint * template, FpPrint * print,
+FpiMatchResult fpi_print_sigfm_match (FpPrint * template, FpPrint * print,
                                     gint bz3_threshold, GError * *error);
 
 /* Helpers to encode metadata into user ID strings. */
