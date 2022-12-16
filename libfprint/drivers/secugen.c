@@ -2338,7 +2338,7 @@ fpi_device_secugen_class_init (FpiDeviceSecugenClass *klass)
   img_class->deactivate = dev_deactivate;
   img_class->change_state = dev_change_state;
 
-  img_class->bz3_threshold = 24;
+  img_class->score_threshold = 24;
 
   img_class->img_width = SECUGEN_IMG_WIDTH;
   img_class->img_height = SECUGEN_IMG_HEIGHT;
