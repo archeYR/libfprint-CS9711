@@ -104,14 +104,18 @@ SigfmImgInfo* sigfm_deserialize_binary(const unsigned char* bytes, int len)
 
 SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
 {
-    const cv::Mat img(height, width, CV_8UC1, (void*)pix);
+    try {
+        const cv::Mat img(height, width, CV_8UC1, (void*)pix);
 
-    std::vector<cv::KeyPoint> pts;
-    cv::Mat descs;
-    cv::SIFT::create()->detectAndCompute(img, cv::Mat(), pts, descs);
+        std::vector<cv::KeyPoint> pts;
+        cv::Mat descs;
+        cv::SIFT::create()->detectAndCompute(img, cv::Mat(), pts, descs);
 
-    auto* info = new SigfmImgInfo{pts, descs};
-    return info;
+        auto* info = new SigfmImgInfo{pts, descs};
+        return info;
+    } catch(...) {
+        return nullptr;
+    }
 }
 
 int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
