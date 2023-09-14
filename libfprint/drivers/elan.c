@@ -19,23 +19,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-/*
- * The algorithm which libfprint uses to match fingerprints doesn't like small
- * images like the ones these drivers produce. There's just not enough minutiae
- * (recognizable print-specific points) on them for a reliable match. This means
- * that unless another matching algo is found/implemented, these readers will
- * not work as good with libfprint as they do with vendor drivers.
- *
- * To get bigger images the driver expects you to swipe the finger over the
- * reader. This works quite well for readers with a rectangular 144x64 sensor.
- * Worse than real swipe readers but good enough for day-to-day use. It needs
- * a steady and relatively slow swipe. There are also square 96x96 sensors and
- * I don't know whether they are in fact usable or not because I don't have one.
- * I imagine they'd be less reliable because the resulting image is even
- * smaller. If they can't be made usable with libfprint, I might end up dropping
- * them because it's better than saying they work when they don't.
- */
-
 #define FP_COMPONENT "elan"
 
 #include "drivers_api.h"
@@ -998,7 +981,8 @@ fpi_device_elan_class_init (FpiDeviceElanClass *klass)
   dev_class->full_name = "ElanTech Fingerprint Sensor";
   dev_class->type = FP_DEVICE_TYPE_USB;
   dev_class->id_table = elan_id_table;
-  dev_class->scan_type = FP_SCAN_TYPE_SWIPE;
+  dev_class->scan_type = FP_SCAN_TYPE_PRESS;
+  dev_class->nr_enroll_stages = 15;
 
   img_class->img_open = dev_init;
   img_class->img_close = dev_deinit;
@@ -1006,5 +990,6 @@ fpi_device_elan_class_init (FpiDeviceElanClass *klass)
   img_class->deactivate = dev_deactivate;
   img_class->change_state = dev_change_state;
 
+  img_class->algorithm = FPI_DEVICE_ALGO_SIGFM;
   img_class->score_threshold = 24;
 }
