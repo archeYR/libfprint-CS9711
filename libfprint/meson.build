@@ -139,6 +139,7 @@ driver_sources = {
     'focaltech_moc' : files('drivers/focaltech_moc/focaltech_moc.c'),
     'mafpmoc' : files('drivers/mafpmoc/mafpmoc.c'),
     'secugen' : files('drivers/secugen.c'),
+    'cs9711' : files('drivers/cs9711/cs9711.c'),
 }
 
 helper_sources = {

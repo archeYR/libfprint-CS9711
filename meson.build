@@ -148,6 +148,7 @@ drivers_info = {
     'focaltech_moc': {},
     'mafpmoc': {},
     'secugen': {},
+    'cs9711': {},
 
     # SPI driver (non-optional if SPI is available)
     'elanspi': { 'spi': true, 'helper': ['udev'], 'optional': not have_spi },
