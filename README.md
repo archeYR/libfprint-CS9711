@@ -11,34 +11,6 @@ Note also that this is based on an experimental image recognition from the [`sig
 while this author is very happy with the result, it should not be used for anything
 serious without serious testing.**
 
-## Fedora
-
-Thanks to stormerxd for contributing [instructions here](https://github.com/ericlinagora/libfprint-CS9711/issues/5#issuecomment-2564730532) .
-
-## Nix
-
-```nix
-  services.fprintd.enable = true;
-  nixpkgs.overlays = [
-    (final: prev: {
-      libfprint = prev.libfprint.overrideAttrs (oldAttrs: {
-        version = "git";
-        src = final.fetchFromGitHub {
-          owner = "ericlinagora";
-          repo = "libfprint-CS9711";
-          rev = "c242a40fcc51aec5b57d877bdf3edfe8cb4883fd";
-          sha256 = "sha256-WFq8sNitwhOOS3eO8V35EMs+FA73pbILRP0JoW/UR80=";
-        };
-        nativeBuildInputs = oldAttrs.nativeBuildInputs ++ [
-          final.opencv
-          final.cmake
-          final.doctest
-        ];
-      });
-    })
-  ];
-```
-
 # Original `README.md` left below
 <hr />
 
