@@ -526,9 +526,9 @@ fp_image_get_minutiae (FpImage *self)
  * not be modified or freed. You need to first extract keypoints and
  * descriptors using fp_image_extract_sigfm_info().
  *
- * Returns: (transfer none) (element-type SigfmImgInfo): The detected minutiae
+ * Returns: The detected minutiae
  */
-SigfmImgInfo *
+void *
 fp_image_get_sigfm_info (FpImage * self)
 {
   return self->sigfm_info;
