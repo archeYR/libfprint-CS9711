@@ -217,7 +217,7 @@ fpi_print_add_from_image (FpPrint *print,
     }
   else if (print->type == FPI_PRINT_SIGFM)
     {
-      SigfmImgInfo * info = fp_image_get_sigfm_info (image);
+      SigfmImgInfo * info = image->sigfm_info;
       g_ptr_array_add (print->prints, info);
     }
 
