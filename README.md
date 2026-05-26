@@ -7,6 +7,16 @@ This is a continuation of @ddlsmurf's [Chipsailing CS9711 driver](https://github
 while this author is very happy with the result, it should not be used for anything
 serious without serious testing.**
 
+## Additional driver: Kensington VeriMark (06cb:0088)
+
+This fork also bundles a working `libfprint` driver for the Kensington VeriMark (`06cb:0088`), the pre-Prometheus Synaptics/Validity chip. It covers enroll, verify, and PAM/login integration end-to-end and auto-pairs with the device on first plug-in. Enable it at configure time with:
+
+```
+meson setup builddir -Ddrivers=cs9711,validity_0088
+```
+
+Driver source lives at `libfprint/drivers/validity-0088/`. Upstream driver repo: [Kensington_VeriMark_06cb-0088](https://github.com/visorcraft/Kensington_VeriMark_06cb-0088).
+
 # Original `README.md` left below
 <hr />
 
