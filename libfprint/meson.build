@@ -155,6 +155,18 @@ driver_sources = {
         [ 'drivers/focaltech_moc/focaltech_moc.c' ],
     'cs9711' :
         [ 'drivers/cs9711/cs9711.c' ],
+    'validity_0088' :
+        [ 'drivers/validity-0088/validity.c',
+          'drivers/validity-0088/validity-capture-builder.c',
+          'drivers/validity-0088/validity-commands.c',
+          'drivers/validity-0088/validity-crypto.c',
+          'drivers/validity-0088/validity-handshake.c',
+          'drivers/validity-0088/validity-init-data.c',
+          'drivers/validity-0088/validity-init-clean-slate.c',
+          'drivers/validity-0088/validity-enroll-data.c',
+          'drivers/validity-0088/validity-pairing.c',
+          'drivers/validity-0088/validity-pretls-pair.c',
+          'drivers/validity-0088/validity-pubkeys.c' ],
 }
 
 helper_sources = {
