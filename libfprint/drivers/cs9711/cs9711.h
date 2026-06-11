@@ -35,6 +35,11 @@ struct _FpDeviceCs9711
   FpImageDevice parent;
 
   unsigned char image_buffer[CS9711_FRAME_SIZE];
+
+  /* Cancels in-flight USB transfers on deactivate so a pending capture
+   * read from a previous session cannot swallow responses meant for the
+   * next one (the main source of "stale data" during init). */
+  GCancellable *interrupt_cancellable;
 };
 
 G_DECLARE_FINAL_TYPE (FpDeviceCs9711, fpi_device_cs9711, FPI, DEVICE_CS9711, FpImageDevice)
