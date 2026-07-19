@@ -15,18 +15,19 @@
     "gcc",
     "opencv4",
     "cmake",
-    "doctest@latest"
+    "doctest@latest",
+    "zip@latest"
   ],
   "shell": {
     "init_hook": "cat << 'EOF'\n\n╔════════════════════════════════════════════════════════════════╗\n║           libfprint-CS9711 Development Environment             ║\n╚════════════════════════════════════════════════════════════════╝\n\n📦 Build Commands:\n   devbox run build:setup   - Initialize meson build directory\n   devbox run build         - Compile the project\n   devbox run build:clean   - Remove build directory\n   devbox run build:rebuild - Clean and rebuild from scratch\n\n🧪 Test Commands:\n   devbox run test          - Run all tests (4 pass, 28 skipped)\n   devbox run test:hwdb     - Run only udev hwdb test\n\n🔧 Maintenance Commands:\n   devbox run sync-hwdb     - Regenerate udev hardware database\n\n📚 Quick Start:\n   devbox run build:setup   # First time setup\n   devbox run build         # Build the project\n   devbox run test          # Run tests\n\nEOF\n",
     "scripts": {
-      "build:setup": "meson setup build -Ddoc=false -Dgtk-examples=false",
-      "build": "meson compile -C build",
-      "build:clean": "rm -rf build",
+      "build:setup":   "meson setup build -Ddoc=false -Dgtk-examples=false",
+      "build":         "meson compile -C build",
+      "build:clean":   "rm -rf build",
       "build:rebuild": "devbox run build:clean && devbox run build:setup && devbox run build",
-      "test": "meson test -C build",
-      "test:hwdb": "meson test -C build --suite data",
-      "sync-hwdb": "ninja -C build sync-udev-hwdb"
+      "test":          "meson test -C build",
+      "test:hwdb":     "meson test -C build --suite data",
+      "sync-hwdb":     "ninja -C build sync-udev-hwdb"
     }
   }
 }
