@@ -314,6 +314,10 @@ unit_tests = [
     'fpi-assembling',
 ]
 
+if 'cs9711' in supported_drivers
+    unit_tests += ['cs9711']
+endif
+
 if 'virtual_image' in drivers
     unit_tests += [
         'fp-context',
@@ -349,10 +353,15 @@ foreach test_name: unit_tests
     endif
 
     basename = 'test-' + test_name
+    extra_link_with = []
+    if test_name == 'cs9711'
+        extra_link_with += libfprint_drivers
+    endif
     test_exe = executable(basename,
         sources: basename + '.c',
         dependencies: [ libfprint_private_dep ] + extra_deps,
         c_args: common_cflags,
+        link_with: extra_link_with,
         link_whole: test_utils,
         install: installed_tests,
         install_dir: installed_tests_execdir,
