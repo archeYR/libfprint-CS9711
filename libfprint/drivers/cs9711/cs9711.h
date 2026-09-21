@@ -30,11 +30,31 @@
 
 #define CS9711_FRAME_SIZE (CS9711_WIDTH * CS9711_HEIGHT)
 
+typedef enum
+{
+  CS9711_SCAN_ERROR_COMPLETE,
+  CS9711_SCAN_ERROR_FAIL,
+} Cs9711ScanErrorAction;
+
+typedef enum
+{
+  CS9711_DEACTIVATE_COMPLETE,
+  CS9711_DEACTIVATE_WAIT_FOR_SCAN,
+} Cs9711DeactivateAction;
+
+Cs9711ScanErrorAction    cs9711_scan_error_action    (const GError *error,
+                                                      gboolean      action_cancelled);
+Cs9711DeactivateAction   cs9711_deactivate_action    (gboolean scan_running);
+
 struct _FpDeviceCs9711
 {
   FpImageDevice parent;
 
   unsigned char image_buffer[CS9711_FRAME_SIZE];
+  gboolean      scan_running;
+  gboolean      scan_started;
+  gboolean      image_ready;
+  gboolean      deactivating;
 };
 
 G_DECLARE_FINAL_TYPE (FpDeviceCs9711, fpi_device_cs9711, FPI, DEVICE_CS9711, FpImageDevice)

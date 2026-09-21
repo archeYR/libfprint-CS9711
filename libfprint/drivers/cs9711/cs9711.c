@@ -47,6 +47,23 @@ G_DEFINE_TYPE (FpDeviceCs9711, fpi_device_cs9711, FP_TYPE_IMAGE_DEVICE)
 
 #define CS9711_FP_CMD_STATE_RESULT_EXPECTED { 0xea, 0x01, 0x62, 0xa0, 0x00, 0x00, 0xc3, 0xea }
 
+Cs9711ScanErrorAction
+cs9711_scan_error_action (const GError *error, gboolean action_cancelled)
+{
+  if (action_cancelled &&
+      g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    return CS9711_SCAN_ERROR_COMPLETE;
+
+  return CS9711_SCAN_ERROR_FAIL;
+}
+
+Cs9711DeactivateAction
+cs9711_deactivate_action (gboolean scan_running)
+{
+  return scan_running ? CS9711_DEACTIVATE_WAIT_FOR_SCAN :
+                        CS9711_DEACTIVATE_COMPLETE;
+}
+
 
 /************************** GENERIC STUFF *************************************/
 
@@ -110,7 +127,9 @@ usb_read_in (FpDevice *dev,
   transfer->short_is_error = short_is_error;
   transfer->ssm = ssm;
   fpi_usb_transfer_fill_bulk (transfer, CS9711_RECEIVE_ENDPOINT, length);
-  fpi_usb_transfer_submit (transfer, timeout_in_ms, NULL, callback, user_data);
+  fpi_usb_transfer_submit (transfer, timeout_in_ms,
+                           fpi_device_get_cancellable (dev),
+                           callback, user_data);
 }
 
 /************************** INIT SSM *************************************/
@@ -236,8 +255,8 @@ enum {
   M_SCAN_INIT_READ,
   M_SCAN_WAIT_FOR_READ_TO_COMPLETE,
   M_SCAN_GET_IMAGE_TAIL,
-  M_SCAN_SEND_POST_SCAN,
   M_SCAN_IMAGE_COMPLETE,
+  M_SCAN_SEND_POST_SCAN,
   M_SCAN_STATE_COUNT,
 };
 
@@ -278,8 +297,19 @@ m_scan_read_cb_bulk (FpiUsbTransfer *transfer,
 
   if (error)
     {
-      fp_err ("Read failed: %s, aborting", error->message);
-      fpi_ssm_mark_failed (transfer->ssm, error);
+      if (cs9711_scan_error_action (error,
+                                    fpi_device_action_is_cancelled (dev)) ==
+          CS9711_SCAN_ERROR_COMPLETE)
+        {
+          fp_dbg ("Scan read cancelled; completing scan state machine");
+          g_clear_error (&error);
+          fpi_ssm_mark_completed (transfer->ssm);
+        }
+      else
+        {
+          fp_err ("Read failed: %s, aborting", error->message);
+          fpi_ssm_mark_failed (transfer->ssm, error);
+        }
     }
   else
     {
@@ -325,6 +355,7 @@ m_scan_submit_image (FpiSsm        *ssm,
 static void
 m_scan_state (FpiSsm *ssm, FpDevice *_dev)
 {
+  FpDeviceCs9711 *self = FPI_DEVICE_CS9711 (_dev);
   FpImageDevice *image_device = FP_IMAGE_DEVICE (_dev);
   GError *error = NULL;
 
@@ -335,9 +366,19 @@ m_scan_state (FpiSsm *ssm, FpDevice *_dev)
       break;
 
     case M_SCAN_INIT_READ:
+      if (fpi_device_action_is_cancelled (_dev))
+        {
+          fpi_ssm_mark_completed (ssm);
+          break;
+        }
+
       usb_read_in (_dev, ssm, CS9711_FP_RECV_LEN_1, FALSE, 0, m_scan_read_cb_bulk, M_SCAN_READ_CB_BULK_UD_FIRST_BLOCK);
       usb_send_out_sync (_dev, CS9711_FP_CMD_TYPE_SCAN, &error);
-      fpi_image_device_report_finger_status (image_device, TRUE);
+      if (!error)
+        {
+          self->scan_started = TRUE;
+          fpi_image_device_report_finger_status (image_device, TRUE);
+        }
       m_util_fail_if_error_or_next (ssm, error);
       break;
 
@@ -349,19 +390,58 @@ m_scan_state (FpiSsm *ssm, FpDevice *_dev)
       usb_read_in (_dev, ssm, CS9711_FP_RECV_LEN_2, TRUE, CS9711_DEFAULT_WAIT_TIMEOUT, m_scan_read_cb_bulk, M_SCAN_READ_CB_BULK_UD_SECOND_BLOCK);
       break;
 
-    case M_SCAN_SEND_POST_SCAN:
-      usb_send_out_sync (_dev, CS9711_FP_CMD_TYPE_RESET, &error);
-      m_util_fail_if_error_or_next (ssm, error);
+    case M_SCAN_IMAGE_COMPLETE:
+      self->image_ready = TRUE;
+      fpi_ssm_mark_completed (ssm);
       break;
 
-    case M_SCAN_IMAGE_COMPLETE:
-      m_scan_submit_image (ssm, image_device);
-      fpi_image_device_report_finger_status (image_device, FALSE);
-      fpi_ssm_mark_completed (ssm);
+    case M_SCAN_SEND_POST_SCAN:
+      if (!self->scan_started)
+        {
+          fpi_ssm_mark_completed (ssm);
+          break;
+        }
+
+      usb_send_out_sync (_dev, CS9711_FP_CMD_TYPE_RESET, &error);
+      self->scan_started = FALSE;
+      if (error && fpi_device_action_is_cancelled (_dev))
+        {
+          fp_warn ("Reset after scan cancellation failed: %s", error->message);
+          g_clear_error (&error);
+        }
+      m_util_fail_if_error_or_next (ssm, error);
       break;
 
     default:
       g_assert_not_reached ();
+    }
+}
+
+static void
+m_scan_complete (FpiSsm *ssm, FpDevice *_dev, GError *error)
+{
+  FpDeviceCs9711 *self = FPI_DEVICE_CS9711 (_dev);
+  FpImageDevice *dev = FP_IMAGE_DEVICE (_dev);
+
+  self->scan_running = FALSE;
+
+  if (self->deactivating)
+    {
+      fp_dbg ("Pending scan finished; completing device deactivation");
+      self->image_ready = FALSE;
+      self->deactivating = FALSE;
+      fpi_image_device_deactivate_complete (dev, error);
+    }
+  else if (error)
+    {
+      self->image_ready = FALSE;
+      fpi_image_device_session_error (dev, error);
+    }
+  else if (self->image_ready)
+    {
+      self->image_ready = FALSE;
+      m_scan_submit_image (ssm, dev);
+      fpi_image_device_report_finger_status (dev, FALSE);
     }
 }
 
@@ -382,20 +462,39 @@ dev_activate (FpImageDevice *dev)
 static void
 dev_deactivate (FpImageDevice *dev)
 {
-  fpi_image_device_deactivate_complete (dev, NULL);
+  FpDeviceCs9711 *self = FPI_DEVICE_CS9711 (dev);
+
+  self->deactivating = TRUE;
+  if (cs9711_deactivate_action (self->scan_running) ==
+      CS9711_DEACTIVATE_COMPLETE)
+    {
+      self->deactivating = FALSE;
+      fpi_image_device_deactivate_complete (dev, NULL);
+    }
+  else
+    {
+      fp_dbg ("Waiting for pending scan before completing deactivation");
+    }
 }
 
 static void
 dev_change_state (FpImageDevice *dev, FpiImageDeviceState state)
 {
+  FpDeviceCs9711 *self = FPI_DEVICE_CS9711 (dev);
   FpiSsm *ssm_loop;
 
   if (state != FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON)
     return;
 
   /* Start a capture operation. */
-  ssm_loop = fpi_ssm_new (FP_DEVICE (dev), m_scan_state, M_SCAN_STATE_COUNT);
-  fpi_ssm_start (ssm_loop, NULL);
+  g_assert (!self->scan_running);
+  self->scan_running = TRUE;
+  self->scan_started = FALSE;
+  self->image_ready = FALSE;
+  ssm_loop = fpi_ssm_new_full (FP_DEVICE (dev), m_scan_state,
+                              M_SCAN_STATE_COUNT, M_SCAN_SEND_POST_SCAN,
+                              "M_SCAN_STATE_COUNT");
+  fpi_ssm_start (ssm_loop, m_scan_complete);
 }
 
 static void
