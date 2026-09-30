@@ -453,6 +453,9 @@ fpi_device_cs9711_class_init (FpDeviceCs9711Class *klass)
   dev_class->id_table = id_table;
   dev_class->scan_type = FP_SCAN_TYPE_PRESS;
   dev_class->nr_enroll_stages = 15;
+  /* The sensor does not heat up. Lock screens keep identify active for a
+   * long time, and the default thermal model disables the device after 3 min. */
+  dev_class->temp_hot_seconds = -1;
 
   img_class->algorithm = FPI_PRINT_SIGFM;
   img_class->img_open = dev_open;
