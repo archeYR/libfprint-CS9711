@@ -211,7 +211,11 @@ drivers_type_func += '{'
 drivers_type_func += '  GArray *drivers = g_array_new (TRUE, FALSE, sizeof (GType));'
 drivers_type_func += '  GType t;'
 drivers_type_func += ''
-foreach driver: supported_drivers
+driver_types = supported_drivers
+if 'cs9711' in supported_drivers
+    driver_types += ['cs9711_acl16']
+endif
+foreach driver: driver_types
     drivers_type_list += 'extern GType (fpi_device_' + driver + '_get_type) (void);'
     drivers_type_func += '  t = fpi_device_' + driver + '_get_type ();'
     drivers_type_func += '  g_array_append_val (drivers, t);'

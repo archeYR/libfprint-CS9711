@@ -31,7 +31,7 @@ G_DEFINE_TYPE (FpDeviceCs9711, fpi_device_cs9711, FP_TYPE_IMAGE_DEVICE)
 #define CS9711_SENSOR_HEIGHT 236
 
 #define CS9711_DEFAULT_WAIT_TIMEOUT 300
-#define CS9711_DEFAULT_RESET_SLEEP  250
+#define CS9711_DEFAULT_RESET_SLEEP  1500
 
 #define CS9711_SEND_ENDPOINT    0x01
 #define CS9711_RECEIVE_ENDPOINT 0x81
@@ -40,6 +40,15 @@ G_DEFINE_TYPE (FpDeviceCs9711, fpi_device_cs9711, FP_TYPE_IMAGE_DEVICE)
 #define CS9711_FP_RECV_LEN_1   8000
 #define CS9711_FP_RECV_LEN_2   24
 #define CS9711_FP_RECV_LEN_MAX CS9711_FP_RECV_LEN_1
+
+/* 2541:2549 (USB FingPintAcl16) answers the same commands but returns one
+ * 8192-byte bulk frame: 112x73 grayscale pixels and 16 bytes of padding.
+ * The 68x118 deinterleave used by the other ids scrambles this image.
+ */
+#define CS9711_ACL16_DRIVER_DATA 1
+#define CS9711_ACL16_FRAME       8192
+#define CS9711_ACL16_SCAN_TIMEOUT 180000
+#define CS9711_ACL16_DRAIN_TIMEOUT 80
 
 #define CS9711_FP_CMD_TYPE_INIT  1
 #define CS9711_FP_CMD_TYPE_RESET 2
@@ -113,7 +122,78 @@ usb_read_in (FpDevice *dev,
   fpi_usb_transfer_submit (transfer, timeout_in_ms, NULL, callback, user_data);
 }
 
+/* Same as usb_read_in, but honour the requested length. usb_read_in always
+ * asks for CS9711_FP_RECV_LEN_MAX, which is wrong for the 8192-byte frame.
+ */
+static void
+usb_read_exact (FpDevice *dev,
+                FpiSsm *ssm,
+                gsize length,
+                guint timeout_in_ms,
+                FpiUsbTransferCallback callback,
+                gpointer user_data)
+{
+  FpiUsbTransfer *transfer = fpi_usb_transfer_new (FP_DEVICE (dev));
+
+  transfer->short_is_error = FALSE;
+  transfer->ssm = ssm;
+  fpi_usb_transfer_fill_bulk (transfer, CS9711_RECEIVE_ENDPOINT, length);
+  fpi_usb_transfer_submit (transfer, timeout_in_ms, NULL, callback, user_data);
+}
+
+static gboolean
+is_acl16 (FpDevice *dev)
+{
+  return fpi_device_get_driver_data (dev) == CS9711_ACL16_DRIVER_DATA;
+}
+
+/* Read until the bulk pipe is quiet, then jump to acl16_after_drain.
+ * A timeout means there is nothing left queued.
+ */
+static void
+m_acl16_drain_cb (FpiUsbTransfer *transfer,
+                  FpDevice       *dev,
+                  gpointer        user_data,
+                  GError         *error)
+{
+  FpDeviceCs9711 *self = FPI_DEVICE_CS9711 (dev);
+
+  (void) user_data;
+
+  if (error)
+    {
+      if (error->code == G_USB_DEVICE_ERROR_TIMED_OUT && error->domain == G_USB_DEVICE_ERROR)
+        {
+          g_error_free (error);
+          fpi_ssm_jump_to_state (transfer->ssm, self->acl16_after_drain);
+          return;
+        }
+      fpi_ssm_mark_failed (transfer->ssm, error);
+      return;
+    }
+
+  fp_dbg ("Acl16 drained %lu leftover bytes", transfer->actual_length);
+  if (self->acl16_drain_budget == 0)
+    {
+      fpi_ssm_jump_to_state (transfer->ssm, self->acl16_after_drain);
+      return;
+    }
+  self->acl16_drain_budget--;
+  usb_read_exact (dev, transfer->ssm, CS9711_ACL16_FRAME, CS9711_ACL16_DRAIN_TIMEOUT, m_acl16_drain_cb, NULL);
+}
+
 /************************** INIT SSM *************************************/
+
+enum {
+  M_INIT_STATE_DRAIN = 0,
+  M_INIT_STATE_SEND_INI_QUERY,
+  M_INIT_STATE_RECOVER_READ_IGNORED,
+  M_INIT_STATE_RECOVER_SEND_RESET,
+  M_INIT_STATE_RECOVER_READ_IGNORED_RESET,
+  M_INIT_STATE_RECOVER_SEND_INIT,
+  M_INIT_STATE_RECEIVE_STATUS,
+  M_INIT_STATE_COUNT,
+};
 
 static void
 m_init_read_cb_check_expected (FpiUsbTransfer *transfer,
@@ -136,13 +216,25 @@ m_init_read_cb_check_expected (FpiUsbTransfer *transfer,
       fp_dbg ("Read %lu of requested %lu", transfer->length, transfer->actual_length);
       if (transfer->actual_length != CS9711_FP_CMD_LEN_1)
         {
-          fp_err ("Error; expected %lu bytes but got %lu, failing", (gsize)CS9711_FP_CMD_LEN_1, transfer->actual_length);
-          error = g_error_new (FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
-                               "Init: expected %lu bytes but got %lu",
-                               (gsize)CS9711_FP_CMD_LEN_1, transfer->actual_length);
-          fpi_ssm_mark_failed (transfer->ssm, error);
+          FpDeviceCs9711 *self = FPI_DEVICE_CS9711 (dev);
+          /* Acl16 often still has the tail of the previous image queued. */
+          if (is_acl16 (dev) && self->acl16_init_retries < 2)
+            {
+              self->acl16_init_retries++;
+              fp_warn ("Acl16 init got %lu bytes, draining and retrying", transfer->actual_length);
+              fpi_ssm_jump_to_state (transfer->ssm, M_INIT_STATE_DRAIN);
+            }
+          else
+            {
+              fp_err ("Error; expected %lu bytes but got %lu, failing", (gsize)CS9711_FP_CMD_LEN_1, transfer->actual_length);
+              error = g_error_new (FP_DEVICE_ERROR, FP_DEVICE_ERROR_PROTO,
+                                   "Init: expected %lu bytes but got %lu",
+                                   (gsize)CS9711_FP_CMD_LEN_1, transfer->actual_length);
+              fpi_ssm_mark_failed (transfer->ssm, error);
+            }
         }
       else if (memcmp (transfer->buffer, expected, CS9711_FP_CMD_LEN_1)) {
+        FPI_DEVICE_CS9711 (dev)->acl16_init_retries = 0;
         if (!user_data_is_ignore_mismatch_if_non_null) {
           fp_warn ("Error; got different state response than expected, but don't understand it anyway, continuing");
         }
@@ -150,21 +242,12 @@ m_init_read_cb_check_expected (FpiUsbTransfer *transfer,
       }
       else
         {
+          FPI_DEVICE_CS9711 (dev)->acl16_init_retries = 0;
           fp_dbg ("Init response valid");
           fpi_ssm_next_state(transfer->ssm);
         }
     }
 }
-
-enum {
-  M_INIT_STATE_SEND_INI_QUERY = 0,
-  M_INIT_STATE_RECOVER_READ_IGNORED,
-  M_INIT_STATE_RECOVER_SEND_RESET,
-  M_INIT_STATE_RECOVER_READ_IGNORED_RESET,
-  M_INIT_STATE_RECOVER_SEND_INIT,
-  M_INIT_STATE_RECEIVE_STATUS,
-  M_INIT_STATE_COUNT,
-};
 
 /* Exec init sequential state machine */
 static void
@@ -175,6 +258,17 @@ m_init_state (FpiSsm *ssm, FpDevice *_dev)
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
+    case M_INIT_STATE_DRAIN:
+      if (!is_acl16 (_dev))
+        {
+          fpi_ssm_next_state (ssm);
+          break;
+        }
+      self->acl16_drain_budget = 6;
+      self->acl16_after_drain = M_INIT_STATE_SEND_INI_QUERY;
+      usb_read_exact (_dev, ssm, CS9711_ACL16_FRAME, CS9711_ACL16_DRAIN_TIMEOUT, m_acl16_drain_cb, NULL);
+      break;
+
     case M_INIT_STATE_SEND_INI_QUERY:
       usb_send_out_sync (_dev, CS9711_FP_CMD_TYPE_INIT, &error);
       if (error)
@@ -236,6 +330,7 @@ enum {
   M_SCAN_INIT_READ,
   M_SCAN_WAIT_FOR_READ_TO_COMPLETE,
   M_SCAN_GET_IMAGE_TAIL,
+  M_SCAN_ACL16_DRAIN,
   M_SCAN_SEND_POST_SCAN,
   M_SCAN_IMAGE_COMPLETE,
   M_SCAN_STATE_COUNT,
@@ -243,6 +338,48 @@ enum {
 
 static const gpointer M_SCAN_READ_CB_BULK_UD_FIRST_BLOCK = (gpointer)1;
 static const gpointer M_SCAN_READ_CB_BULK_UD_SECOND_BLOCK = (gpointer)2;
+
+static void
+m_scan_read_cb_acl16 (FpiUsbTransfer *transfer,
+                      FpDevice       *dev,
+                      gpointer        user_data,
+                      GError         *error)
+{
+  FpDeviceCs9711 *self = FPI_DEVICE_CS9711 (dev);
+  const guint8 *pixels;
+  gsize n;
+
+  (void) user_data;
+  g_assert (transfer->ssm != NULL);
+
+  if (error)
+    {
+      fp_err ("Read failed: %s, aborting", error->message);
+      fpi_ssm_mark_failed (transfer->ssm, error);
+      return;
+    }
+
+  pixels = transfer->buffer;
+  n = transfer->actual_length;
+  /* Echo of the scan command: ea <type> 00 00 00 00 <type> ea */
+  if (n >= 8 && pixels[0] == 0xea && pixels[7] == 0xea && pixels[1] == pixels[6])
+    {
+      pixels += 8;
+      n -= 8;
+    }
+
+  if (n < CS9711_ACL16_IMAGE)
+    {
+      fp_dbg ("Acl16 short frame (%lu bytes), discarding and waiting again", (unsigned long) n);
+      self->acl16_after_drain = M_SCAN_INIT_READ;
+      fpi_ssm_jump_to_state (transfer->ssm, M_SCAN_ACL16_DRAIN);
+      return;
+    }
+
+  memcpy (self->image_buffer, pixels, CS9711_ACL16_IMAGE);
+  self->acl16_after_drain = M_SCAN_SEND_POST_SCAN;
+  fpi_ssm_jump_to_state (transfer->ssm, M_SCAN_ACL16_DRAIN);
+}
 
 /* Read into FpDeviceCs9711->image_buffer if one of the two expected chunk sizes */
 static void
@@ -303,15 +440,25 @@ m_scan_submit_image (FpiSsm        *ssm,
   FpDeviceCs9711 *self = FPI_DEVICE_CS9711 (dev);
   FpImage *img;
 
-  img = fp_image_new (CS9711_WIDTH, CS9711_HEIGHT);
-  if (img == NULL)
-    return 1;
+  if (is_acl16 (FP_DEVICE (dev)))
+    {
+      img = fp_image_new (CS9711_ACL16_WIDTH, CS9711_ACL16_HEIGHT);
+      if (img == NULL)
+        return 1;
+      memcpy (img->data, self->image_buffer, CS9711_ACL16_IMAGE);
+    }
+  else
+    {
+      img = fp_image_new (CS9711_WIDTH, CS9711_HEIGHT);
+      if (img == NULL)
+        return 1;
 
-  for (gsize y = 0; y < CS9711_SENSOR_HEIGHT; y++)
-    for (gsize x = 0; x < CS9711_SENSOR_WIDTH; x++) {
-      gsize dy = y / 2;
-      gsize dx = x * 2 + y % 2;
-      img->data[dy * CS9711_WIDTH + dx] = self->image_buffer[y * CS9711_SENSOR_WIDTH + x];
+      for (gsize y = 0; y < CS9711_SENSOR_HEIGHT; y++)
+        for (gsize x = 0; x < CS9711_SENSOR_WIDTH; x++) {
+          gsize dy = y / 2;
+          gsize dx = x * 2 + y % 2;
+          img->data[dy * CS9711_WIDTH + dx] = self->image_buffer[y * CS9711_SENSOR_WIDTH + x];
+        }
     }
 
   img->flags = FPI_IMAGE_PARTIAL;
@@ -335,7 +482,10 @@ m_scan_state (FpiSsm *ssm, FpDevice *_dev)
       break;
 
     case M_SCAN_INIT_READ:
-      usb_read_in (_dev, ssm, CS9711_FP_RECV_LEN_1, FALSE, 0, m_scan_read_cb_bulk, M_SCAN_READ_CB_BULK_UD_FIRST_BLOCK);
+      if (is_acl16 (_dev))
+        usb_read_exact (_dev, ssm, CS9711_ACL16_FRAME, CS9711_ACL16_SCAN_TIMEOUT, m_scan_read_cb_acl16, NULL);
+      else
+        usb_read_in (_dev, ssm, CS9711_FP_RECV_LEN_1, FALSE, 0, m_scan_read_cb_bulk, M_SCAN_READ_CB_BULK_UD_FIRST_BLOCK);
       usb_send_out_sync (_dev, CS9711_FP_CMD_TYPE_SCAN, &error);
       fpi_image_device_report_finger_status (image_device, TRUE);
       m_util_fail_if_error_or_next (ssm, error);
@@ -347,6 +497,11 @@ m_scan_state (FpiSsm *ssm, FpDevice *_dev)
 
     case M_SCAN_GET_IMAGE_TAIL:
       usb_read_in (_dev, ssm, CS9711_FP_RECV_LEN_2, TRUE, CS9711_DEFAULT_WAIT_TIMEOUT, m_scan_read_cb_bulk, M_SCAN_READ_CB_BULK_UD_SECOND_BLOCK);
+      break;
+
+    case M_SCAN_ACL16_DRAIN:
+      FPI_DEVICE_CS9711 (_dev)->acl16_drain_budget = 6;
+      usb_read_exact (_dev, ssm, CS9711_ACL16_FRAME, CS9711_ACL16_DRAIN_TIMEOUT, m_acl16_drain_cb, NULL);
       break;
 
     case M_SCAN_SEND_POST_SCAN:
@@ -404,11 +559,13 @@ dev_open (FpImageDevice *dev)
   FpDeviceCs9711 *self = FPI_DEVICE_CS9711 (dev);
   GError *error = NULL;
 
-  /* Claim usb interface */
-  g_usb_device_claim_interface (fpi_device_get_usb_device (FP_DEVICE (dev)), 0, 0, &error);
+  /* Claim usb interface. The Acl16 (2541:2549) puts the fingerprint
+   * endpoints on interface 1; the other ids use interface 0. */
+  g_usb_device_claim_interface (fpi_device_get_usb_device (FP_DEVICE (dev)),
+                                is_acl16 (FP_DEVICE (dev)) ? 1 : 0, 0, &error);
 
   /* Initialize private structure */
-  memset(self->image_buffer, 0, CS9711_FRAME_SIZE);
+  memset(self->image_buffer, 0, sizeof (self->image_buffer));
 
   /* Notify open complete */
   fpi_image_device_open_complete (dev, error);
@@ -421,7 +578,7 @@ dev_close (FpImageDevice *dev)
 
   /* Release usb interface */
   g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (dev)),
-                                  0, 0, &error);
+                                  is_acl16 (FP_DEVICE (dev)) ? 1 : 0, 0, &error);
 
   /* Notify close complete */
   fpi_image_device_close_complete (dev, error);
@@ -467,4 +624,39 @@ fpi_device_cs9711_class_init (FpDeviceCs9711Class *klass)
 
   img_class->img_width = CS9711_WIDTH;
   img_class->img_height = CS9711_HEIGHT;
+}
+
+/* Temperature settings are copied from the class during construction. Keep
+ * Acl16's exception in its own class so the original readers retain their
+ * default temperature model. The driver id stays the same for stored prints.
+ */
+typedef struct
+{
+  FpDeviceCs9711 parent;
+} FpDeviceCs9711Acl16;
+
+typedef FpDeviceCs9711Class FpDeviceCs9711Acl16Class;
+
+GType fpi_device_cs9711_acl16_get_type (void);
+G_DEFINE_TYPE (FpDeviceCs9711Acl16, fpi_device_cs9711_acl16, fpi_device_cs9711_get_type ())
+
+static const FpIdEntry acl16_id_table[] = {
+  { .vid = 0x2541, .pid = 0x2549, .driver_data = CS9711_ACL16_DRIVER_DATA },
+  { .vid = 0, .pid = 0, .driver_data = 0 },
+};
+
+static void
+fpi_device_cs9711_acl16_init (FpDeviceCs9711Acl16 *self)
+{
+}
+
+static void
+fpi_device_cs9711_acl16_class_init (FpDeviceCs9711Acl16Class *klass)
+{
+  FpDeviceClass *dev_class = FP_DEVICE_CLASS (klass);
+
+  dev_class->id_table = acl16_id_table;
+  /* The default 3-minute estimate aborts a 15-stage Acl16 enroll. */
+  dev_class->temp_hot_seconds = -1;
+  fpi_device_class_auto_initialize_features (dev_class);
 }

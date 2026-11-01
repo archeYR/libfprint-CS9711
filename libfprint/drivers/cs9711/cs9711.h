@@ -30,11 +30,22 @@
 
 #define CS9711_FRAME_SIZE (CS9711_WIDTH * CS9711_HEIGHT)
 
+/* 2541:2549 sends a plain 112x73 grayscale frame, then 16 pad bytes. */
+#define CS9711_ACL16_WIDTH 112
+#define CS9711_ACL16_HEIGHT 73
+#define CS9711_ACL16_IMAGE (CS9711_ACL16_WIDTH * CS9711_ACL16_HEIGHT)
+#define CS9711_IMAGE_BUFFER_SIZE 8192
+
 struct _FpDeviceCs9711
 {
   FpImageDevice parent;
 
-  unsigned char image_buffer[CS9711_FRAME_SIZE];
+  unsigned char image_buffer[CS9711_IMAGE_BUFFER_SIZE];
+
+  /* Acl16 leaves extra bulk data queued after a frame. */
+  guint8 acl16_drain_budget;
+  guint8 acl16_init_retries;
+  int acl16_after_drain;
 };
 
 G_DECLARE_FINAL_TYPE (FpDeviceCs9711, fpi_device_cs9711, FPI, DEVICE_CS9711, FpImageDevice)

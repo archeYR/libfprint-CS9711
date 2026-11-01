@@ -252,6 +252,16 @@ test_utils = static_library('fprint-test-utils',
     dependencies: libfprint_private_dep,
     install: false)
 
+if 'cs9711' in supported_drivers
+    cs9711_variants_test = executable('test-cs9711-variants',
+        'test-cs9711-variants.c',
+        dependencies: libfprint_private_dep,
+        link_with: libfprint_drivers,
+        c_args: common_cflags,
+    )
+    test('cs9711-variants', cs9711_variants_test, suite: ['unit-tests'], env: envs)
+endif
+
 unit_tests = [
     'fpi-device',
     'fpi-ssm',
